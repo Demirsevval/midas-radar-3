@@ -6,7 +6,7 @@ class SignalEngine:
         self.history = {}
         self.last_signal_time = {}
 
-    def update_and_check(self, symbol: str, price: float, volume: float):
+    def update_and_check(self, symbol: str, price: float, volume: float, funding_rate: float = 0.0, open_interest_change: float = 0.0):
         current_time = time.time()
         
         if symbol not in self.history:
@@ -36,7 +36,7 @@ class SignalEngine:
                         "symbol": symbol, "price": price,
                         "signal_type": "RİSK UYARISI (BTC ÇÖKÜŞÜ)", "level": "SEVİYE 3",
                         "reason": f"Bitcoin'de ani düşüş tespit edildi (%{btc_drop*100:.2f}). Alım sinyalleri askıya alındı.",
-                        "volume_ratio": 0.0, "price_change": round(btc_drop * 100, 2)
+                        "volume_ratio": 0.0, "price_change": round(btc_drop * 100, 2), "extra_info": ""
                     }
 
         if current_time - self.last_signal_time.get(symbol, 0) < 300:
@@ -48,16 +48,22 @@ class SignalEngine:
 
         signal_type, level, reason = None, None, ""
 
-        if volume_ratio > 2.0 and price_change_short > 0.015:
-            signal_type, level, reason = "ERKEN UYARI", "SEVİYE 2", f"Normal hacmin {volume_ratio:.1f} katı hacim ve momentum artışı."
+        # Gelişmiş Filtre: Hacim patlaması + Türev piyasa (OI artışı veya makul fonlama oranı) teyidi
+        is_futures_confirmed = open_interest_change > 1.5 or (funding_rate > -0.001 and funding_rate < 0.005)
+
+        if volume_ratio > 2.0 and price_change_short > 0.015 and is_futures_confirmed:
+            signal_type, level, reason = "DOĞRULANMIŞ FIRSAT (OI DESTEKLİ)", "SEVİYE 1", f"Hacim {volume_ratio:.1f}x arttı, açık pozisyonlar ve momentum pozitif."
         elif volume_ratio > 3.0 and price_change_short > 0.035:
             signal_type, level, reason = "DOĞRULANMIŞ FIRSAT", "SEVİYE 1", f"Güçlü hacim patlaması ({volume_ratio:.1f}x) ve yukarı yönlü kırılım."
+        elif volume_ratio > 2.0 and price_change_short > 0.015:
+            signal_type, level, reason = "ERKEN UYARI", "SEVİYE 2", f"Normal hacmin {volume_ratio:.1f} katı hacim ve momentum artışı."
 
         if signal_type:
             self.last_signal_time[symbol] = current_time
+            extra_text = f"📈 Fonlama: %{funding_rate*100:.4f} | OI Değişim: %{open_interest_change:.1f}"
             return {
                 "symbol": symbol, "price": price, "signal_type": signal_type,
                 "level": level, "reason": reason, "volume_ratio": round(volume_ratio, 2),
-                "price_change": round(price_change_short * 100, 2)
+                "price_change": round(price_change_short * 100, 2), "extra_info": extra_text
             }
         return None

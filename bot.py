@@ -2,9 +2,12 @@ import asyncio
 import json
 import logging
 import requests
-import websockets
-from config import TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, WATCHED_COINS
+from config import WATCHED_COINS
 from signal_engine import SignalEngine
+
+# Token ve Chat ID doğrudan gömülü
+TELEGRAM_BOT_TOKEN = "8701079360:AAFzZZdPePGCdkOog1W7Ge8bZBAH0MV0zao"
+TELEGRAM_CHAT_ID = "6073753368"
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
@@ -12,48 +15,54 @@ logger = logging.getLogger(__name__)
 engine = SignalEngine()
 
 def send_telegram_alert(message: str):
-    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
-        logger.error("Token veya Chat ID eksik!")
-        return False
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": "Markdown"}
     try:
         response = requests.post(url, json=payload, timeout=5)
-        return response.status_code == 200
+        if response.status_code == 200:
+            logger.info("Telegram bildirimi başarıyla gönderildi.")
+            return True
+        else:
+            logger.error(f"Telegram API Hatası: {response.text}")
+            return False
     except Exception as e:
-        logger.error(f"Telegram hata: {e}")
+        logger.error(f"Telegram bağlantı istisnası: {e}")
         return False
 
 async def monitor_market():
-    # Bot başlarken test mesajı gönder
-    send_telegram_alert("🟢 *Midas Kripto Radar* sıfırdan kurulum ile başarıyla başlatıldı ve BTC korumalı takibe başladı!")
-    
-    streams = "/".join([f"{coin.lower()}@ticker" for coin in WATCHED_COINS])
-    url = f"wss://stream.binance.com:9443/stream?streams={streams}"
-    
+    send_telegram_alert("🟢 *Midas Kripto Radar* bulut üzerinde başarıyla başlatıldı ve piyasa takibine başladı!")
+    logger.info("Piyasa veri döngüsü başlatılıyor...")
+
     while True:
         try:
-            async with websockets.connect(url) as websocket:
-                logger.info("WebSocket bağlantısı aktif.")
-                while True:
-                    message = await websocket.recv()
-                    data = json.loads(message)
-                    if "data" in data:
-                        ticker = data["data"]
-                        signal = engine.update_and_check(ticker.get("s"), float(ticker.get("c")), float(ticker.get("v")))
-                        if signal:
-                            msg = (
-                                f"🚨 *KRİPTO RADAR — {signal['signal_type']}*\n\n"
-                                f"🪙 *Coin:* `{signal['symbol']}`\n"
-                                f"💵 *Fiyat:* `{signal['price']}`\n"
-                                f"📊 *Değişim:* `% {signal['price_change']}` (Hacim: {signal['volume_ratio']}x)\n\n"
-                                f"🔍 *Tespit:* {signal['reason']}\n"
-                                f"⚠️ *Seviye:* {signal['level']}"
-                            )
-                            send_telegram_alert(msg)
+            for coin in WATCHED_COINS:
+                url = f"https://api.binance.com/api/v3/ticker/24hr?symbol={coin}"
+                response = requests.get(url, timeout=5)
+                if response.status_code == 200:
+                    data = response.json()
+                    symbol = data.get("symbol")
+                    price = float(data.get("lastPrice"))
+                    volume = float(data.get("volume"))
+                    
+                    signal = engine.update_and_check(symbol, price, volume)
+                    if signal:
+                        msg = (
+                            f"🚨 *KRİPTO RADAR — {signal['signal_type']}*\n\n"
+                            f"🪙 *Coin:* `{signal['symbol']}`\n"
+                            f"💵 *Fiyat:* `{signal['price']}`\n"
+                            f"📊 *Değişim:* `% {signal['price_change']}` (Hacim: {signal['volume_ratio']}x)\n\n"
+                            f"🔍 *Tespit:* {signal['reason']}\n"
+                            f"⚠️ *Seviye:* {signal['level']}"
+                        )
+                        send_telegram_alert(msg)
+                        logger.info(f"Sinyal Gönderildi ve Bildirim Atıldı: {symbol}")
+                
+                await asyncio.sleep(0.5)
+            await asyncio.sleep(5)
+            
         except Exception as e:
-                            logger.error(f"Bağlantı hatası: {e}")
-                            await asyncio.sleep(5)
+            logger.error(f"Veri çekme hatası: {e}")
+            await asyncio.sleep(10)
 
 if __name__ == "__main__":
     asyncio.run(monitor_market())

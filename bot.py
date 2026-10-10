@@ -2,7 +2,6 @@ import asyncio
 import json
 import logging
 import requests
-from config import WATCHED_COINS
 from signal_engine import SignalEngine
 
 TELEGRAM_BOT_TOKEN = "8701079360:AAFzZZdPePGCdkOog1W7Ge8bZBAH0MV0zao"
@@ -24,61 +23,68 @@ def send_telegram_alert(message: str):
         return False
 
 async def monitor_market():
-    send_telegram_alert("🟢 *Midas Kripto Radar v3* başarıyla başlatıldı!")
-    logger.info("Piyasa veri döngüsü başlatılıyor...")
+    send_telegram_alert("🟢 *Midas Kripto Radar v5* (Tüm Piyasa / Sınırsız Tarama) başarıyla başlatıldı!")
+    logger.info("Binance üzerindeki tüm USDT pariteleri otomatik taranıyor...")
 
     while True:
         try:
-            for coin in WATCHED_COINS:
-                ticker_url = f"https://api.binance.com/api/v3/ticker/24hr?symbol={coin}"
-                res = requests.get(ticker_url, timeout=5)
+            # Binance üzerindeki tüm coinlerin 24 saatlik verisini tek seferde çek
+            url = "https://api.binance.com/api/v3/ticker/24hr"
+            res = requests.get(url, timeout=10)
+            
+            if res.status_code == 200:
+                tickers = res.json()
                 
-                if res.status_code == 200:
-                    data = res.json()
-                    symbol = data.get("symbol")
-                    price = float(data.get("lastPrice"))
-                    volume = float(data.get("volume"))
+                for ticker in tickers:
+                    symbol = ticker.get("symbol")
                     
-                    funding_rate = 0.0
-                    try:
-                        f_url = f"https://fapi.binance.com/fapi/v1/premiumIndex?symbol={symbol}"
-                        f_res = requests.get(f_url, timeout=3)
-                        if f_res.status_code == 200:
-                            funding_rate = float(f_res.json().get("lastFundingRate", 0.0))
-                    except:
-                        pass
+                    # Sadece USDT paritelerini al, stablecoinleri (USDC vb.) dışarıda bırak
+                    if symbol.endswith("USDT") and symbol not in ["USDCUSDT", "USDTUSDT", "FDUSDUSDT", "TUSDUSDT", "EURUSDT"]:
+                        try:
+                            price = float(ticker.get("lastPrice"))
+                            volume = float(ticker.get("volume"))
+                            
+                            # Hızlı ön eleme: İşlem hacmi çok düşük olan ölü coinleri atla (performans için)
+                            if volume < 50000:
+                                continue
 
-                    oi_change = 0.0
-                    try:
-                        oi_url = f"https://fapi.binance.com/fapi/v1/openInterest?symbol={symbol}"
-                        oi_res = requests.get(oi_url, timeout=3)
-                        if oi_res.status_code == 200:
+                            # Vadeli fonlama oranını hızlıca kontrol et
+                            funding_rate = 0.0
+                            try:
+                                f_url = f"https://fapi.binance.com/fapi/v1/premiumIndex?symbol={symbol}"
+                                f_res = requests.get(f_url, timeout=1)
+                                if f_res.status_code == 200:
+                                    funding_rate = float(f_res.json().get("lastFundingRate", 0.0))
+                            except:
+                                pass
+
                             oi_change = 2.0 
-                    except:
-                        pass
 
-                    signal = engine.update_and_check(symbol, price, volume, funding_rate, oi_change)
-                    
-                    if signal:
-                        extra_line = f"\n{signal.get('extra_info', '')}" if signal.get('extra_info') else ""
-                        msg = (
-                            f"🚨 *KRİPTO RADAR — {signal['signal_type']}*\n\n"
-                            f"🪙 *Coin:* `{signal['symbol']}`\n"
-                            f"💵 *Fiyat:* `{signal['price']}`\n"
-                            f"📊 *Değişim:* `% {signal['price_change']}` (Hacim: {signal['volume_ratio']}x)"
-                            f"{extra_line}\n\n"
-                            f"🔍 *Tespit:* {signal['reason']}\n"
-                            f"⚠️ *Seviye:* {signal['level']}"
-                        )
-                        send_telegram_alert(msg)
-                        logger.info(f"Sinyal Gönderildi: {symbol}")
-                
-                await asyncio.sleep(0.5)
-            await asyncio.sleep(5)
+                            # Sinyal motoruna gönder
+                            signal = engine.update_and_check(symbol, price, volume, funding_rate, oi_change)
+                            
+                            if signal:
+                                extra_line = f"\n{signal.get('extra_info', '')}" if signal.get('extra_info') else ""
+                                msg = (
+                                    f"🚨 *KRİPTO RADAR — {signal['signal_type']}*\n\n"
+                                    f"🪙 *Coin:* `{signal['symbol']}`\n"
+                                    f"💵 *Fiyat:* `{signal['price']}`\n"
+                                    f"📊 *Değişim:* `% {signal['price_change']}` (Hacim: {signal['volume_ratio']}x)"
+                                    f"{extra_line}\n\n"
+                                    f"🔍 *Tespit:* {signal['reason']}\n"
+                                    f"⚠️ *Seviye:* {signal['level']}"
+                                )
+                                send_telegram_alert(msg)
+                                logger.info(f"Sinyal Yakalandı ve Gönderildi: {symbol}")
+                        except Exception:
+                            continue
+                            
+            # Tüm piyasa tarandıktan sonra döngü arasında 10 saniye bekle
+            await asyncio.sleep(10)
             
         except Exception as e:
-            logger.error(f"Veri döngüsü hatası: {e}")
-            await asyncio.sleep(10)
+            logger.error(f"Genel piyasa döngü hatası: {e}")
+            await asyncio.sleep(15)
 
 if __name__ == "__main__":
     asyncio.run(monitor_market())

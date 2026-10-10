@@ -23,12 +23,11 @@ def send_telegram_alert(message: str):
         return False
 
 async def monitor_market():
-    send_telegram_alert("🟢 *Midas Kripto Radar v5* (Tüm Piyasa / Sınırsız Tarama) başarıyla başlatıldı!")
-    logger.info("Binance üzerindeki tüm USDT pariteleri otomatik taranıyor...")
+    send_telegram_alert("🟢 *Midas Kripto Radar v6* (USDT, TRY ve USDC Tüm Piyasalar) başarıyla başlatıldı!")
+    logger.info("Binance üzerindeki USDT, TRY ve USDC pariteleri taranıyor...")
 
     while True:
         try:
-            # Binance üzerindeki tüm coinlerin 24 saatlik verisini tek seferde çek
             url = "https://api.binance.com/api/v3/ticker/24hr"
             res = requests.get(url, timeout=10)
             
@@ -38,20 +37,36 @@ async def monitor_market():
                 for ticker in tickers:
                     symbol = ticker.get("symbol")
                     
-                    # Sadece USDT paritelerini al, stablecoinleri (USDC vb.) dışarıda bırak
-                    if symbol.endswith("USDT") and symbol not in ["USDCUSDT", "USDTUSDT", "FDUSDUSDT", "TUSDUSDT", "EURUSDT"]:
+                    # Sadece USDT, TRY ve USDC paritelerini kapsayacak şekilde filtreliyoruz
+                    is_valid = (
+                        (symbol.endswith("USDT") and symbol not in ["USDCUSDT", "USDTUSDT", "FDUSDUSDT", "TUSDUSDT", "EURUSDT"]) or
+                        (symbol.endswith("TRY") and symbol not in ["USDTTRY", "USDCUSTRY", "EURTRY"]) or
+                        (symbol.endswith("USDC") and symbol not in ["USDTUSDC", "USDCUSDC"])
+                    )
+                    
+                    if is_valid:
                         try:
                             price = float(ticker.get("lastPrice"))
                             volume = float(ticker.get("volume"))
                             
-                            # Hızlı ön eleme: İşlem hacmi çok düşük olan ölü coinleri atla (performans için)
-                            if volume < 50000:
+                            # Hacim filtresi (Hareketsiz çöpleri elemek için)
+                            if volume < 15000:
                                 continue
 
-                            # Vadeli fonlama oranını hızlıca kontrol et
+                            # TRY veya USDC paritesi ise, fonlama oranı (futures) sorgusu için USDT karşılığına çevir (Örn: BTCTRY -> BTCUSDT)
+                            if symbol.endswith("TRY"):
+                                base_asset = symbol[:-3]
+                                futures_symbol = base_asset + "USDT"
+                            elif symbol.endswith("USDC"):
+                                base_asset = symbol[:-4]
+                                futures_symbol = base_asset + "USDT"
+                            else:
+                                futures_symbol = symbol
+
+                            # Fonlama oranını çek
                             funding_rate = 0.0
                             try:
-                                f_url = f"https://fapi.binance.com/fapi/v1/premiumIndex?symbol={symbol}"
+                                f_url = f"https://fapi.binance.com/fapi/v1/premiumIndex?symbol={futures_symbol}"
                                 f_res = requests.get(f_url, timeout=1)
                                 if f_res.status_code == 200:
                                     funding_rate = float(f_res.json().get("lastFundingRate", 0.0))
@@ -60,7 +75,6 @@ async def monitor_market():
 
                             oi_change = 2.0 
 
-                            # Sinyal motoruna gönder
                             signal = engine.update_and_check(symbol, price, volume, funding_rate, oi_change)
                             
                             if signal:
@@ -79,7 +93,6 @@ async def monitor_market():
                         except Exception:
                             continue
                             
-            # Tüm piyasa tarandıktan sonra döngü arasında 10 saniye bekle
             await asyncio.sleep(10)
             
         except Exception as e:
